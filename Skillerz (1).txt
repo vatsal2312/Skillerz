@@ -1,0 +1,491 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+import "hardhat/console.sol";
+
+contract Skillerz is ERC721Enumerable, Ownable{
+    using Strings for uint256;
+
+    /* base attributes */
+    string public baseExtension = ".json";
+    uint256 public tokenCounter;
+    string public revealJson;
+    string public contractURI;
+    bool public paused;
+
+    /* minting price */
+    uint256 public mintingPrice = 0.01 ether;
+    uint256 public whitelistPrice = 0.01 ether;
+
+    /* supply */
+    uint256 public maxMintAmount = 10;
+    uint256 public maxSupply = 6000;
+
+    /* collections dict */
+    struct Collections {
+        bool active;
+        uint256 maxSupply;
+        string name;
+        uint256 counter;
+        string baseURI;
+        uint256 reserved;
+        uint256 reservedCounter;
+        uint256 idCounter;
+    }
+    mapping(uint256 => Collections) public CollectionsDict;
+
+    /* whitelist params */
+    bool public whitelistActive = false;
+    uint256 public maxWhitelistAmount = 3;
+    uint256 public whitelistSize = 0;
+    mapping(address => bool) public whitelist;
+    mapping(address => uint256) whitelistClaimed;
+
+    // constructor
+    constructor(string memory _newContractURI) ERC721("Skillerz", "SKZ") {
+        tokenCounter = 0;
+        contractURI = _newContractURI;
+        initDict();
+    }
+
+    /// public minting
+    function mintNFT(address _to, uint256 _mintAmount, uint256 _collectionID) public payable {
+        require(!paused, "Contract is paused!");
+
+        require(whitelistActive == false, "Only Whitelist minting is allowed");
+        require(CollectionsDict[_collectionID].active == true, "Minting of mintable collection is not active yet");
+        require(tokenCounter + _mintAmount <= maxSupply, "Maximum of possible NFTs is reached");
+        require(_mintAmount > 0, "At least one token must be minted");
+        require(_mintAmount <= maxMintAmount, "Exceeds maximal possible tokens to mint on a try");
+        require(CollectionsDict[_collectionID].counter + 
+                _mintAmount +
+                CollectionsDict[_collectionID].reserved - 
+                CollectionsDict[_collectionID].reservedCounter <= 
+                CollectionsDict[_collectionID].maxSupply, "Maximum Supply of the collection is reached"); 
+ 
+        if(msg.sender != owner()) {
+            require(msg.value >= mintingPrice * _mintAmount, "Amount of ETH is to less");
+        }   
+        
+        for (uint256 i = 1; i <= _mintAmount; i++) {
+            tokenCounter++;
+            CollectionsDict[_collectionID].counter++;
+            CollectionsDict[_collectionID].idCounter++;
+            _safeMint(_to, CollectionsDict[_collectionID].idCounter);
+        }   
+    }
+
+    // public minting
+    function mintWhitelistNFT(address _to, uint256 _mintAmount, uint256 _collectionID) public payable {
+        require(!paused, "Contract is paused!");
+
+        require(whitelistActive == true, "Whitelist minting not activated!");
+        require(CollectionsDict[_collectionID].active == true, "Minting of mintable collection is not active yet");
+        require(tokenCounter + _mintAmount <= maxSupply, "Maximum of possible NFTs is reached");
+        require(_mintAmount > 0, "At least one token must be minted");
+        require(_mintAmount <= maxMintAmount, "Exceeds maximal possible tokens to mint on a try");
+        require(CollectionsDict[_collectionID].counter + 
+                _mintAmount +
+                CollectionsDict[_collectionID].reserved - 
+                CollectionsDict[_collectionID].reservedCounter <= 
+                CollectionsDict[_collectionID].maxSupply, "Maximum Supply of the collection is reached"); 
+        require(isWhitelisted(msg.sender), "You are not whitelisted!");
+        require(maxWhitelistAmount >= _mintAmount, "Only 3 mints are allowed for whitlist users");
+        require(_mintAmount + getWhitelistClaim(msg.sender) <= maxWhitelistAmount, "You exceed your whitelist limit");
+        require(msg.value >= whitelistPrice * _mintAmount, "Amount of ETH is to less");        
+
+        for (uint256 i = 1; i <= _mintAmount; i++) {
+            tokenCounter++;
+            whitelistClaimed[msg.sender] += 1;
+            CollectionsDict[_collectionID].counter++;
+            CollectionsDict[_collectionID].idCounter++;
+            _safeMint(_to, CollectionsDict[_collectionID].idCounter);
+        }
+    }
+
+    // read URI of Token for Meta
+    function tokenURI(uint256 tokenId) public view virtual override
+        returns (string memory)
+    {
+        require(_exists(tokenId), "ERC721Metadata: URI query for nonexistent token");
+        return string(abi.encodePacked(CollectionsDict[getCollectionOfNFT(tokenId)].baseURI, tokenId.toString(), baseExtension));
+    }
+
+
+    // get NFT of specific address
+    function getNFTContract(address _owner) public view returns (uint256[] memory) {
+        uint256 ownerTokenCount = balanceOf(_owner);
+        uint256[] memory tokenIds = new uint256[](ownerTokenCount);
+        for (uint256 i; i < ownerTokenCount; i++) {
+            tokenIds[i] = tokenOfOwnerByIndex(_owner, i);
+        }
+        return tokenIds;
+    }
+
+    // check is user is whitelisted
+    function isWhitelisted(address _address) public view returns(bool) {
+        return whitelist[_address];
+    }
+
+    // check whitelist claims per user
+    function getWhitelistClaim(address _address) public view returns(uint256) {
+        return whitelistClaimed[_address];
+    }
+
+    // only owner functions
+    // set minting price
+    function setmintingPrice(uint256 _newPrice) public onlyOwner {
+        mintingPrice = _newPrice;
+    }
+
+    // set whitelist minting price
+    function setwhitelistPrice(uint256 _newPrice) public onlyOwner {
+        whitelistPrice = _newPrice;
+    }
+
+    // set maximal amout of nft to mint
+    function setmaxMintAmount(uint256 _newmaxMintAmount) public onlyOwner {
+        maxMintAmount = _newmaxMintAmount;
+    }
+
+    // set maximal amout of nft to mint on whitelist
+    function setmaxWhitelistAmount(uint256 _newmaxMintAmount) public onlyOwner {
+        maxWhitelistAmount = _newmaxMintAmount;
+    }
+
+    // change base uri
+    function setBaseURI(string memory _newBaseURI, uint256 _collectionID) public onlyOwner {
+        CollectionsDict[_collectionID].baseURI = _newBaseURI;
+    }
+
+    // change contract uri
+    function setContractURI(string memory _newContractURI) public onlyOwner {
+        contractURI = _newContractURI;
+    }
+
+    // change extension of base uri
+    function setBaseExtension(string memory _newBaseExtension) public onlyOwner {
+        baseExtension = _newBaseExtension;
+    }
+
+    // activate normal minting
+    function switchMintingActive(uint256 _collectionID) public onlyOwner {
+        if(CollectionsDict[_collectionID].active) {
+            CollectionsDict[_collectionID].active = false;
+        } else {
+            CollectionsDict[_collectionID].active = true;
+        }
+    }
+
+    // activate whitelist minting
+    function switchWhitelistActive() public onlyOwner {
+        if(whitelistActive) {
+            whitelistActive = false;
+        } else {
+            whitelistActive = true;
+        }
+    }
+
+    // switch paused
+    function switchPaused() public onlyOwner {
+        if(paused) {
+            paused = false;
+        } else {
+            paused = true;
+        }
+    }
+
+    // update reserved amount
+    function updateReserved(uint256 _newReserved, uint256 _collectionID) public onlyOwner {
+        require(_newReserved <= CollectionsDict[_collectionID].maxSupply - CollectionsDict[_collectionID].counter, "Reserved must be smaller than totalsupply - counter");
+        require(_newReserved >= CollectionsDict[_collectionID].reservedCounter, "New reserved must be larger or equal the already reserved minted");
+        CollectionsDict[_collectionID].reserved = _newReserved;
+    }
+    
+    // withdraw all
+    function withdraw() public payable onlyOwner {
+            require(payable(msg.sender).send(address(this).balance));
+    }
+
+    // bulk upload of whitelist users
+    function bulkSetWhitelist(address[] memory accounts) public onlyOwner returns (uint256) {
+        uint256 taskCounter = 0;
+        for (uint256 i = 0; i < accounts.length; i++) {
+            if(!whitelist[accounts[i]]) {
+                whitelist[accounts[i]] = true;
+                whitelistSize++;
+                taskCounter++;
+            }
+        }
+        return taskCounter;
+    }
+
+    /// reserved minting
+    function mintReserved(address _to, uint256 _mintAmount, uint256 _collectionID) public onlyOwner {
+
+        require(_mintAmount > 0, "At least one token must be minted");
+
+        require(CollectionsDict[_collectionID].active == true, "Minting of mintable collection is not active yet");
+        require(CollectionsDict[_collectionID].reservedCounter + _mintAmount <= CollectionsDict[_collectionID].reserved , "Minting of mintable collection is not active yet");
+        require(CollectionsDict[_collectionID].idCounter + _mintAmount <= CollectionsDict[_collectionID].maxSupply, "Maximum of available NFTs in this collection is reached");
+
+        for (uint256 i = 1; i <= _mintAmount; i++) {
+            tokenCounter++;
+            CollectionsDict[_collectionID].reservedCounter++;
+            CollectionsDict[_collectionID].counter++;
+            CollectionsDict[_collectionID].idCounter++;
+            _safeMint(_to, CollectionsDict[_collectionID].idCounter);
+        }   
+    }
+
+    // Airdrop function
+    function airdopNFT(address[] memory _list, uint256 _collectionID) public onlyOwner {
+        for(uint256 i; i < _list.length; i++) {
+            mintNFT(_list[i], 1, _collectionID);
+        }
+    }
+
+    // internal state functions
+    // read collection based on nft id
+    function getCollectionOfNFT(uint256 _id) private pure returns(uint256) {
+        if(_id < 301) {
+            return 1;
+        } else if(_id < 601) {
+            return 2;
+        } else if(_id < 901) {
+            return 3;
+        } else if (_id < 1201) {
+            return 4;
+        } else if(_id < 1501) {
+            return 5;
+        } else if(_id < 1801) {
+            return 6;
+        } else if(_id < 2101) {
+            return 7;
+        } else if(_id < 2401) {
+            return 8;
+        } else if(_id < 2701){
+            return 9;
+        } else if(_id < 3001) {
+            return 10;
+        } else if(_id < 3301) {
+            return 11;
+        } else if(_id < 3601) {
+            return 12;
+        } else if(_id < 3901) {
+            return 13;
+        } else if(_id < 4201) {
+            return 14;
+        } else if(_id < 4501) {
+            return 15;
+        } else if(_id < 4801) {
+            return 16;
+        } else if(_id < 5101) {
+            return 17;
+        } else if(_id < 5401) {
+            return 18;
+        } else if(_id < 5701) {
+            return 19;
+        } else if(_id < 6001) {
+            return 20;
+        } else {
+            return 0;
+        }
+    }
+
+    // initialization of the collection dict
+    function initDict() private {
+        CollectionsDict[0].active = false;
+        CollectionsDict[0].maxSupply = 0;
+        CollectionsDict[0].name = "Not a valid collection";
+        CollectionsDict[0].counter = 0;
+        CollectionsDict[0].baseURI = "";
+        CollectionsDict[0].reserved = 0;
+        CollectionsDict[0].reservedCounter = 0;
+        CollectionsDict[0].idCounter = 0;
+
+        CollectionsDict[1].active = false;
+        CollectionsDict[1].maxSupply = 300;
+        CollectionsDict[1].name = "Empathy Skillerz";
+        CollectionsDict[1].counter = 0;
+        CollectionsDict[1].baseURI = "https://collection1.com/";
+        CollectionsDict[1].reserved = 15;
+        CollectionsDict[1].reservedCounter = 0;
+        CollectionsDict[1].idCounter = 0;
+
+        CollectionsDict[2].active = false;
+        CollectionsDict[2].maxSupply = 300;
+        CollectionsDict[2].name = "Communication Skillerz";
+        CollectionsDict[2].counter = 0;
+        CollectionsDict[2].baseURI = "https://collection2.com/";
+        CollectionsDict[2].reserved = 15;
+        CollectionsDict[2].reservedCounter = 0;
+        CollectionsDict[2].idCounter = 300;
+
+        CollectionsDict[3].active = false;
+        CollectionsDict[3].maxSupply = 300;
+        CollectionsDict[3].name = "Build Network Skillerz";
+        CollectionsDict[3].counter = 0;
+        CollectionsDict[3].baseURI = "https://collection3.com/";
+        CollectionsDict[3].reserved = 15;
+        CollectionsDict[3].reservedCounter = 0;
+        CollectionsDict[3].idCounter = 600;
+
+        CollectionsDict[4].active = false;
+        CollectionsDict[4].maxSupply = 300;
+        CollectionsDict[4].name = "Critical Thinking Skillerz";
+        CollectionsDict[4].counter = 0;
+        CollectionsDict[4].baseURI = "https://collection4.com/";
+        CollectionsDict[4].reserved = 15;
+        CollectionsDict[4].reservedCounter = 0;
+        CollectionsDict[4].idCounter = 900;
+
+        CollectionsDict[5].active = false;
+        CollectionsDict[5].maxSupply = 300;
+        CollectionsDict[5].name = "Business Mindset Skillerz ";
+        CollectionsDict[5].counter = 0;
+        CollectionsDict[5].baseURI = "https://collection5.com/";
+        CollectionsDict[5].reserved = 15;
+        CollectionsDict[5].reservedCounter = 0;
+        CollectionsDict[5].idCounter = 1200;
+
+        CollectionsDict[6].active = false;
+        CollectionsDict[6].maxSupply = 300;
+        CollectionsDict[6].name = "Work Ethics Skillerz";
+        CollectionsDict[6].counter = 0;
+        CollectionsDict[6].baseURI = "https://collection6.com/";
+        CollectionsDict[6].reserved = 15;
+        CollectionsDict[6].reservedCounter = 0;
+        CollectionsDict[6].idCounter = 1500;
+
+        CollectionsDict[7].active = false;
+        CollectionsDict[7].maxSupply = 300;
+        CollectionsDict[7].name = "Client Oriented Skillerz";
+        CollectionsDict[7].counter = 0;
+        CollectionsDict[7].baseURI = "https://collection7.com/";
+        CollectionsDict[7].reserved = 15;
+        CollectionsDict[7].reservedCounter = 0;
+        CollectionsDict[7].idCounter = 1800;
+
+        CollectionsDict[8].active = false;
+        CollectionsDict[8].maxSupply = 300;
+        CollectionsDict[8].name = "Manage Frustration Skillerz";
+        CollectionsDict[8].counter = 0;
+        CollectionsDict[8].baseURI = "https://collection8.com/";
+        CollectionsDict[8].reserved = 15;
+        CollectionsDict[8].reservedCounter = 0;
+        CollectionsDict[8].idCounter = 2100;
+
+        CollectionsDict[9].active = false;
+        CollectionsDict[9].maxSupply = 300;
+        CollectionsDict[9].name = "Time Management Skillerz";
+        CollectionsDict[9].counter = 0;
+        CollectionsDict[9].baseURI = "https://collection9.com/";
+        CollectionsDict[9].reserved = 15;
+        CollectionsDict[9].reservedCounter = 0;
+        CollectionsDict[9].idCounter = 2400;
+
+        CollectionsDict[10].active = false;
+        CollectionsDict[10].maxSupply = 300;
+        CollectionsDict[10].name = "Inspire Others Skillerz";
+        CollectionsDict[10].counter = 0;
+        CollectionsDict[10].baseURI = "https://collection10.com/";
+        CollectionsDict[10].reserved = 15;
+        CollectionsDict[10].reservedCounter = 0;
+        CollectionsDict[10].idCounter = 2700;
+
+        CollectionsDict[11].active = false;
+        CollectionsDict[11].maxSupply = 300;
+        CollectionsDict[11].name = "Attention To Details Skillerz";
+        CollectionsDict[11].counter = 0;
+        CollectionsDict[11].baseURI = "https://collection11.com/";
+        CollectionsDict[11].reserved = 15;
+        CollectionsDict[11].reservedCounter = 0;
+        CollectionsDict[11].idCounter = 3000;
+
+        CollectionsDict[12].active = false;
+        CollectionsDict[12].maxSupply = 300;
+        CollectionsDict[12].name = "Deliver On Promises Skillerz";
+        CollectionsDict[12].counter = 0;
+        CollectionsDict[12].baseURI = "https://collection12.com/";
+        CollectionsDict[12].reserved = 15;
+        CollectionsDict[12].reservedCounter = 0;
+        CollectionsDict[12].idCounter = 3300;
+
+        CollectionsDict[13].active = false;
+        CollectionsDict[13].maxSupply = 300;
+        CollectionsDict[13].name = "Eager To Learn Skillerz";
+        CollectionsDict[13].counter = 0;
+        CollectionsDict[13].baseURI = "https://collection13.com/";
+        CollectionsDict[13].reserved = 15;
+        CollectionsDict[13].reservedCounter = 0;
+        CollectionsDict[13].idCounter = 3600;
+
+        CollectionsDict[14].active = false;
+        CollectionsDict[14].maxSupply = 300;
+        CollectionsDict[14].name = "Enthusiasm Skillerz";
+        CollectionsDict[14].counter = 0;
+        CollectionsDict[14].baseURI = "https://collection14.com/";
+        CollectionsDict[14].reserved = 15;
+        CollectionsDict[14].reservedCounter = 0;
+        CollectionsDict[14].idCounter = 3900;
+
+        CollectionsDict[15].active = false;
+        CollectionsDict[15].maxSupply = 300;
+        CollectionsDict[15].name = "Pragmatism Skillerz";
+        CollectionsDict[15].counter = 0;
+        CollectionsDict[15].baseURI = "https://collection15.com/";
+        CollectionsDict[15].reserved = 15;
+        CollectionsDict[15].reservedCounter = 0;
+        CollectionsDict[15].idCounter = 4200;
+
+        CollectionsDict[16].active = false;
+        CollectionsDict[16].maxSupply = 300;
+        CollectionsDict[16].name = "Active Listening Skillerz";
+        CollectionsDict[16].counter = 0;
+        CollectionsDict[16].baseURI = "https://collection16.com/";
+        CollectionsDict[16].reserved = 15;
+        CollectionsDict[16].reservedCounter = 0;
+        CollectionsDict[16].idCounter = 4500;
+
+        CollectionsDict[17].active = false;
+        CollectionsDict[17].maxSupply = 300;
+        CollectionsDict[17].name = "Creativity Skillerz";
+        CollectionsDict[17].counter = 0;
+        CollectionsDict[17].baseURI = "https://collection17.com/";
+        CollectionsDict[17].reserved = 15;
+        CollectionsDict[17].reservedCounter = 0;
+        CollectionsDict[17].idCounter = 4800;
+
+        CollectionsDict[18].active = false;
+        CollectionsDict[18].maxSupply = 300;
+        CollectionsDict[18].name = "Team Player Skillerz";
+        CollectionsDict[18].counter = 0;
+        CollectionsDict[18].baseURI = "https://collection18.com/";
+        CollectionsDict[18].reserved = 15;
+        CollectionsDict[18].reservedCounter = 0;
+        CollectionsDict[18].idCounter = 5100;
+
+        CollectionsDict[19].active = false;
+        CollectionsDict[19].maxSupply = 300;
+        CollectionsDict[19].name = "Self Starter Skillerz";
+        CollectionsDict[19].counter = 0;
+        CollectionsDict[19].baseURI = "https://collection19.com/";
+        CollectionsDict[19].reserved = 15;
+        CollectionsDict[19].reservedCounter = 0;
+        CollectionsDict[19].idCounter = 5400;
+
+        CollectionsDict[20].active = false;
+        CollectionsDict[20].maxSupply = 300;
+        CollectionsDict[20].name = "Flexibility Skillerz";
+        CollectionsDict[20].counter = 0;
+        CollectionsDict[20].baseURI = "https://collection20.com/";
+        CollectionsDict[20].reserved = 15;
+        CollectionsDict[20].reservedCounter = 0;
+        CollectionsDict[20].idCounter = 5700;
+    }
+}
